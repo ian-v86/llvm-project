@@ -1337,6 +1337,15 @@ def FeatureVendorXSfsclic
     : RISCVExperimentalExtension<0, 1,
                                  "SiFive CLIC Supervisor-mode CSRs">;
 
+// MLV Extensions
+
+def FeatureVendorXMLV
+    : RISCVExtension<0, 1,
+                     "MLV Vector Math Extensions">;
+def HasVendorXMLV : Predicate<"Subtarget->hasVendorXMLV()">,
+                      AssemblerPredicate<(all_of FeatureVendorXMLV),
+                          "'XMLV' (MLV Vector Math Extensions)">;
+
 // Core-V Extensions
 
 def FeatureVendorXCVelw
