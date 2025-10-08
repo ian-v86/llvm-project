@@ -48,9 +48,10 @@ let Predicates = [HasVendorXMLV], mayLoad = 0, mayStore = 0, hasSideEffects = 0,
 // Pseudo instruction for mlv.vexp
 // This is a placeholder pseudo that will be extended with proper encoding later
 class MLVPseudoUnary<VReg vd_type, VReg vs_type, string opcodestr> :
-      RISCVVPseudo<(outs vd_type:$vd),
-                   (ins vd_type:$passthru, vs_type:$vs2, AVL:$vl, sew:$sew, vec_policy:$policy),
-                   [], opcodestr, "$vd, $vs2"> {
+      Pseudo<(outs vd_type:$vd),
+             (ins vd_type:$passthru, vs_type:$vs2, AVL:$vl, sew:$sew, vec_policy:$policy),
+             []>,
+      RISCVVPseudo {
   let mayLoad = 0;
   let mayStore = 0;
   let hasSideEffects = 0;
@@ -62,10 +63,11 @@ class MLVPseudoUnary<VReg vd_type, VReg vs_type, string opcodestr> :
 }
 
 class MLVPseudoUnaryMask<VReg vd_type, VReg vs_type, string opcodestr> :
-      RISCVVPseudo<(outs GetVRegNoV0<vd_type>.R:$vd),
-                   (ins GetVRegNoV0<vd_type>.R:$passthru, vs_type:$vs2,
-                        VMaskOp:$vm, AVL:$vl, sew:$sew, vec_policy:$policy),
-                   [], opcodestr, "$vd, $vs2, v0.t"> {
+      Pseudo<(outs GetVRegNoV0<vd_type>.R:$vd),
+             (ins GetVRegNoV0<vd_type>.R:$passthru, vs_type:$vs2,
+                  VMaskOp:$vm, AVL:$vl, sew:$sew, vec_policy:$policy),
+             []>,
+      RISCVVPseudo {
   let mayLoad = 0;
   let mayStore = 0;
   let hasSideEffects = 0;
