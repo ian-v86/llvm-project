@@ -2075,6 +2075,7 @@ include "RISCVInstrInfoZicfiss.td"
 // Vendor extensions
 //===----------------------------------------------------------------------===//
 
+include "RISCVInstrInfoXMLV.td"
 include "RISCVInstrInfoXVentana.td"
 include "RISCVInstrInfoXTHead.td"
 include "RISCVInstrInfoXSf.td"

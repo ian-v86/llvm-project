@@ -1043,6 +1043,15 @@ def FeatureStdExtSupm
 // Vendor extensions
 //===----------------------------------------------------------------------===//
 
+// MLV Extensions
+
+def FeatureVendorXMLV
+    : RISCVExtension<"xmlv", 0, 1,
+                     "'XMLV' (MLV Vector Math Extensions)">;
+def HasVendorXMLV : Predicate<"Subtarget->hasVendorXMLV()">,
+                      AssemblerPredicate<(all_of FeatureVendorXMLV),
+                          "'XMLV' (MLV Vector Math Extensions)">;
+
 // Ventana Extenions
 
 def FeatureVendorXVentanaCondOps
