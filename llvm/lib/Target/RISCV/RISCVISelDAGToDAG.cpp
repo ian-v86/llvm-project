@@ -72,6 +72,26 @@ void RISCVDAGToDAGISel::PreprocessISelDAG() {
       Result = CurDAG->getNode(Opc, DL, VT, CurDAG->getUNDEF(VT), Src, VL);
       break;
     }
+    case RISCVISD::FP_EXTEND_VL: {
+      // bf16 can only extend to f32 (via Zvfbfmin), not to f16 directly.
+      // If we see FP_EXTEND_VL bf16 -> f16, expand to bf16 -> f32 -> f16.
+      SDValue Src = N->getOperand(0);
+      SDValue Mask = N->getOperand(1);
+      SDValue VL = N->getOperand(2);
+      MVT DstVT = N->getSimpleValueType(0);
+      MVT SrcVT = Src.getSimpleValueType();
+
+      if (SrcVT.getVectorElementType() == MVT::bf16 &&
+          DstVT.getVectorElementType() == MVT::f16) {
+        // bf16 -> f16 must go through f32
+        SDLoc DL(N);
+        MVT F32VT = MVT::getVectorVT(MVT::f32, DstVT.getVectorElementCount());
+        SDValue ToF32 = CurDAG->getNode(RISCVISD::FP_EXTEND_VL, DL, F32VT,
+                                         Src, Mask, VL);
+        Result = CurDAG->getNode(RISCVISD::FP_ROUND_VL, DL, DstVT, ToF32, Mask, VL);
+      }
+      break;
+    }
     case RISCVISD::SPLAT_VECTOR_SPLIT_I64_VL: {
       // Lower SPLAT_VECTOR_SPLIT_I64 to two scalar stores and a stride 0 vector
       // load. Done after lowering and combining so that we have a chance to

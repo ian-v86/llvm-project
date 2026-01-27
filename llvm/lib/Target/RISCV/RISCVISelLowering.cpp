@@ -472,6 +472,10 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::BR_CC, MVT::bf16, Expand);
     setOperationAction(ZfhminZfbfminPromoteOps, MVT::bf16, Promote);
     setOperationAction(ISD::FREM, MVT::bf16, Promote);
+    // bf16 must promote to f32, not f16
+    for (auto Op : ZfhminZfbfminPromoteOps)
+      AddPromotedToType(Op, MVT::bf16, MVT::f32);
+    AddPromotedToType(ISD::FREM, MVT::bf16, MVT::f32);
     // FIXME: Need to promote bf16 FCOPYSIGN to f32, but the
     // DAGCombiner::visitFP_ROUND probably needs improvements first.
     setOperationAction(ISD::FCOPYSIGN, MVT::bf16, Expand);
@@ -1109,7 +1113,10 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
         setOperationAction({ISD::VP_MERGE, ISD::VP_SELECT, ISD::SELECT}, VT,
                            Custom);
         setOperationAction(ISD::SELECT_CC, VT, Expand);
-        // TODO: Promote to fp32.
+        // Promote bf16 vector ops to f32
+        MVT F32VecVT = MVT::getVectorVT(MVT::f32, VT.getVectorElementCount());
+        setOperationPromotedToType(ZvfhminPromoteOps, VT, F32VecVT);
+        setOperationPromotedToType(ZvfhminPromoteVPOps, VT, F32VecVT);
       }
     }
 
@@ -6503,6 +6510,15 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
 
     if (!Op.getValueType().isVector())
       return Op;
+    // bf16 can only extend to f32, not f16. If we see bf16 -> f16, fix it.
+    MVT SrcEltVT = Op0VT.getSimpleVT().getVectorElementType();
+    MVT DstEltVT = VT.getSimpleVT().getVectorElementType();
+    if (SrcEltVT == MVT::bf16 && DstEltVT == MVT::f16) {
+      EVT F32VecVT = VT.changeVectorElementType(MVT::f32);
+      SDValue ToF32 = DAG.getNode(ISD::FP_EXTEND, DL, F32VecVT, Op0);
+      return DAG.getNode(ISD::FP_ROUND, DL, VT, ToF32,
+                         DAG.getIntPtrConstant(0, DL, /*isTarget=*/true));
+    }
     return lowerVectorFPExtendOrRoundLike(Op, DAG);
   }
   case ISD::FP_ROUND: {
@@ -8309,12 +8325,22 @@ RISCVTargetLowering::lowerStrictFPExtendOrRoundLike(SDValue Op,
   auto [Mask, VL] = getDefaultVLOps(SrcVT, ContainerVT, DL, DAG, Subtarget);
 
   // RVV can only widen/truncate fp to types double/half the size as the source.
-  if ((VT.getVectorElementType() == MVT::f64 &&
+  // Also, bf16 can only convert to/from f32 (via Zvfbfmin), so bf16 <-> f16
+  // and bf16 <-> f64 need to go through f32.
+  bool NeedsTwoStep =
+      (VT.getVectorElementType() == MVT::f64 &&
        (SrcVT.getVectorElementType() == MVT::f16 ||
         SrcVT.getVectorElementType() == MVT::bf16)) ||
       ((VT.getVectorElementType() == MVT::f16 ||
         VT.getVectorElementType() == MVT::bf16) &&
-       SrcVT.getVectorElementType() == MVT::f64)) {
+       SrcVT.getVectorElementType() == MVT::f64) ||
+      // bf16 <-> f16 must go through f32
+      (VT.getVectorElementType() == MVT::f16 &&
+       SrcVT.getVectorElementType() == MVT::bf16) ||
+      (VT.getVectorElementType() == MVT::bf16 &&
+       SrcVT.getVectorElementType() == MVT::f16);
+
+  if (NeedsTwoStep) {
     // For double rounding, the intermediate rounding should be round-to-odd.
     unsigned InterConvOpc = Op.getOpcode() == ISD::STRICT_FP_EXTEND
                                 ? RISCVISD::STRICT_FP_EXTEND_VL
@@ -8325,9 +8351,19 @@ RISCVTargetLowering::lowerStrictFPExtendOrRoundLike(SDValue Op,
     Chain = Src.getValue(1);
   }
 
-  unsigned ConvOpc = Op.getOpcode() == ISD::STRICT_FP_EXTEND
-                         ? RISCVISD::STRICT_FP_EXTEND_VL
-                         : RISCVISD::STRICT_FP_ROUND_VL;
+  // Determine the final conversion opcode based on whether f32 -> Dest is
+  // extend or round, not the original operation type.
+  MVT DstEltVT = ContainerVT.getVectorElementType();
+  unsigned ConvOpc;
+  if (NeedsTwoStep) {
+    // After going through f32, use extend for f64, round for f16/bf16
+    ConvOpc = (DstEltVT == MVT::f64) ? RISCVISD::STRICT_FP_EXTEND_VL
+                                     : RISCVISD::STRICT_FP_ROUND_VL;
+  } else {
+    ConvOpc = Op.getOpcode() == ISD::STRICT_FP_EXTEND
+                  ? RISCVISD::STRICT_FP_EXTEND_VL
+                  : RISCVISD::STRICT_FP_ROUND_VL;
+  }
   SDValue Res = DAG.getNode(ConvOpc, DL, DAG.getVTList(ContainerVT, MVT::Other),
                             Chain, Src, Mask, VL);
   if (VT.isFixedLengthVector()) {
@@ -8357,13 +8393,22 @@ RISCVTargetLowering::lowerVectorFPExtendOrRoundLike(SDValue Op,
   SDValue Src = Op.getOperand(0);
   MVT SrcVT = Src.getSimpleValueType();
 
+  // bf16 can only convert to/from f32 (Zvfbfmin), not f16 or f64 directly
+  bool IsBF16Src = SrcVT.getVectorElementType() == MVT::bf16;
+  bool IsBF16Dst = VT.getVectorElementType() == MVT::bf16;
   bool IsDirectExtend =
       IsExtend && (VT.getVectorElementType() != MVT::f64 ||
                    (SrcVT.getVectorElementType() != MVT::f16 &&
                     SrcVT.getVectorElementType() != MVT::bf16));
+  // bf16 source can only directly extend to f32
+  if (IsBF16Src && VT.getVectorElementType() != MVT::f32)
+    IsDirectExtend = false;
   bool IsDirectTrunc = !IsExtend && ((VT.getVectorElementType() != MVT::f16 &&
                                       VT.getVectorElementType() != MVT::bf16) ||
                                      SrcVT.getVectorElementType() != MVT::f64);
+  // bf16 dest can only directly truncate from f32
+  if (IsBF16Dst && SrcVT.getVectorElementType() != MVT::f32)
+    IsDirectTrunc = false;
 
   bool IsDirectConv = IsDirectExtend || IsDirectTrunc;
 
@@ -8404,8 +8449,16 @@ RISCVTargetLowering::lowerVectorFPExtendOrRoundLike(SDValue Op,
   MVT InterVT = ContainerVT.changeVectorElementType(MVT::f32);
   SDValue IntermediateConv =
       DAG.getNode(InterConvOpc, DL, InterVT, Src, Mask, VL);
+
+  // The second step opcode depends on whether f32 -> Dest is extend or round,
+  // not on the original IsExtend. For bf16 <-> f16 via f32:
+  // - bf16 -> f16: first extend bf16->f32, then ROUND f32->f16
+  // - f16 -> bf16: first extend f16->f32, then ROUND f32->bf16
+  MVT DstEltVT = ContainerVT.getVectorElementType();
+  unsigned SecondConvOpc = (DstEltVT == MVT::f64) ? RISCVISD::FP_EXTEND_VL
+                                                  : RISCVISD::FP_ROUND_VL;
   SDValue Result =
-      DAG.getNode(ConvOpc, DL, ContainerVT, IntermediateConv, Mask, VL);
+      DAG.getNode(SecondConvOpc, DL, ContainerVT, IntermediateConv, Mask, VL);
   if (VT.isFixedLengthVector())
     return convertFromScalableVector(VT, Result, DAG, Subtarget);
   return Result;
@@ -14574,7 +14627,13 @@ struct NodeExtensionHelper {
       SupportsSExt = true;
       break;
     case RISCVISD::FP_EXTEND_VL:
-      SupportsFPExt = true;
+      // bf16 can only extend to f32 (via Zvfbfmin), not to f16.
+      // The widening combines expect narrow type to be half the root size,
+      // so for f32 root that would be f16. bf16 sources can't be extended
+      // to f16, so don't allow FPExt folding for bf16 sources.
+      if (OrigOperand.getOperand(0).getValueType().getVectorElementType() !=
+          MVT::bf16)
+        SupportsFPExt = true;
       break;
     case ISD::SPLAT_VECTOR:
     case RISCVISD::VMV_V_X_VL:
@@ -14593,6 +14652,11 @@ struct NodeExtensionHelper {
       unsigned NarrowSize = VT.getScalarSizeInBits() / 2;
       unsigned ScalarBits = Op.getOperand(0).getValueSizeInBits();
       if (NarrowSize != ScalarBits)
+        break;
+
+      // bf16 can only extend to f32, not to f16. The widening combines
+      // expect the narrow type to be f16 (half of f32), so disallow bf16.
+      if (Op.getOperand(0).getValueType() == MVT::bf16)
         break;
 
       SupportsFPExt = true;
@@ -14668,8 +14732,11 @@ struct NodeExtensionHelper {
             Opc == RISCVISD::VWADDU_W_VL || Opc == RISCVISD::VWSUBU_W_VL;
         SupportsSExt =
             Opc == RISCVISD::VWADD_W_VL || Opc == RISCVISD::VWSUB_W_VL;
+        // bf16 can only extend to f32, not to f16. The widening ops expect
+        // the narrow type to be f16 (half of f32), so disallow bf16.
         SupportsFPExt =
-            Opc == RISCVISD::VFWADD_W_VL || Opc == RISCVISD::VFWSUB_W_VL;
+            (Opc == RISCVISD::VFWADD_W_VL || Opc == RISCVISD::VFWSUB_W_VL) &&
+            OrigOperand.getValueType().getVectorElementType() != MVT::bf16;
         // There's no existing extension here, so we don't have to worry about
         // making sure it gets removed.
         EnforceOneUse = false;
@@ -17316,6 +17383,25 @@ SDValue RISCVTargetLowering::PerformDAGCombine(SDNode *N,
         !Subtarget.hasVInstructionsF16())
       return SDValue();
     return combineBinOp_VLToVWBinOp_VL(N, DCI, Subtarget);
+  }
+  case RISCVISD::FP_EXTEND_VL: {
+    // bf16 can only extend to f32 (via Zvfbfmin), not to f16 directly.
+    // If we see FP_EXTEND_VL bf16 -> f16, expand to bf16 -> f32 -> f16.
+    SDValue Src = N->getOperand(0);
+    SDValue Mask = N->getOperand(1);
+    SDValue VL = N->getOperand(2);
+    MVT DstVT = N->getSimpleValueType(0);
+    MVT SrcVT = Src.getSimpleValueType();
+
+    if (SrcVT.getVectorElementType() == MVT::bf16 &&
+        DstVT.getVectorElementType() == MVT::f16) {
+      // bf16 -> f16 must go through f32
+      MVT F32VT = MVT::getVectorVT(MVT::f32, DstVT.getVectorElementCount());
+      SDValue ToF32 = DAG.getNode(RISCVISD::FP_EXTEND_VL, DL, F32VT,
+                                   Src, Mask, VL);
+      return DAG.getNode(RISCVISD::FP_ROUND_VL, DL, DstVT, ToF32, Mask, VL);
+    }
+    break;
   }
   case ISD::LOAD:
   case ISD::STORE: {

@@ -3415,6 +3415,9 @@ bool DAGTypeLegalizer::SoftPromoteHalfOperand(SDNode *N, unsigned OpNo) {
   case ISD::PATCHPOINT:
     Res = SoftPromoteHalfOp_PATCHPOINT(N, OpNo);
     break;
+  case ISD::BUILD_VECTOR:
+    Res = SoftPromoteHalfOp_BUILD_VECTOR(N);
+    break;
   }
 
   if (!Res.getNode())
@@ -3602,4 +3605,26 @@ SDValue DAGTypeLegalizer::SoftPromoteHalfOp_PATCHPOINT(SDNode *N,
     ReplaceValueWith(SDValue(N, ResNum), NewNode.getValue(ResNum));
 
   return SDValue(); // Signal that we replaced the node ourselves.
+}
+
+SDValue DAGTypeLegalizer::SoftPromoteHalfOp_BUILD_VECTOR(SDNode *N) {
+  // Build vector with soft-promoted half operands.
+  // BUILD_VECTOR half_elt0, half_elt1, ... -> BUILD_VECTOR i16_elt0, i16_elt1, ...
+  // then bitcast back to the half vector type.
+  EVT VT = N->getValueType(0);
+  SDLoc dl(N);
+
+  // Collect soft-promoted operands.
+  SmallVector<SDValue, 16> NewOps;
+  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i)
+    NewOps.push_back(GetSoftPromotedHalf(N->getOperand(i)));
+
+  // Get the element type from the soft-promoted operands (should be i16).
+  EVT NewEltVT = NewOps[0].getValueType();
+
+  // Build integer vector and bitcast to half vector.
+  EVT NewVT = EVT::getVectorVT(*DAG.getContext(), NewEltVT,
+                               VT.getVectorNumElements());
+  SDValue NewVec = DAG.getBuildVector(NewVT, dl, NewOps);
+  return DAG.getNode(ISD::BITCAST, dl, VT, NewVec);
 }
