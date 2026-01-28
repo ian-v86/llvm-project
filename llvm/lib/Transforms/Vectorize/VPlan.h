@@ -1435,6 +1435,51 @@ public:
 #endif
 };
 
+/// VPWidenEVLRecipe is a recipe for widened arithmetic that uses VP intrinsics
+/// with explicit vector length, matching the pattern of VPWidenLoadEVLRecipe
+/// and VPWidenStoreEVLRecipe.
+class VPWidenEVLRecipe : public VPRecipeWithIRFlags {
+  unsigned Opcode;
+
+public:
+  VPWidenEVLRecipe(VPWidenRecipe &W, VPValue &EVL)
+      : VPRecipeWithIRFlags(VPDef::VPWidenEVLSC, W.operands(),
+                            *W.getUnderlyingInstr()),
+        Opcode(W.getOpcode()) {
+    transferFlags(W);
+    addOperand(&EVL);
+  }
+
+  ~VPWidenEVLRecipe() override = default;
+
+  // TODO: implement clone() if VPlan transforms need to copy regions
+  // containing EVL-widened recipes (e.g., unrolling or plan cloning).
+  VPWidenEVLRecipe *clone() override {
+    llvm_unreachable("cloning not implemented yet");
+  }
+
+  VP_CLASSOF_IMPL(VPDef::VPWidenEVLSC)
+
+  unsigned getOpcode() const { return Opcode; }
+
+  /// The VPValue of the explicit vector length.
+  VPValue *getEVL() const { return getOperand(getNumOperands() - 1); }
+
+  void execute(VPTransformState &State) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+#endif
+
+  /// Returns true if the recipe only uses the first lane of operand \p Op.
+  bool onlyFirstLaneUsed(const VPValue *Op) const override {
+    assert(is_contained(operands(), Op) &&
+           "Op must be an operand of the recipe");
+    return Op == getEVL();
+  }
+};
+
 /// VPWidenCastRecipe is a recipe to create vector cast instructions.
 class VPWidenCastRecipe : public VPRecipeWithIRFlags {
   /// Cast instruction opcode.
@@ -3270,6 +3315,11 @@ class VPlan {
   /// any UF.
   SmallSetVector<unsigned, 2> UFs;
 
+  /// The widest scalar type in bits used in the loop, which determines the
+  /// element width for vsetvli on RISC-V. Defaults to 8 (the most
+  /// conservative value, yielding the smallest LMUL for a given VF).
+  unsigned WidestScalarInBits = 8;
+
   /// Holds the name of the VPlan, for printing.
   std::string Name;
 
@@ -3410,6 +3460,9 @@ public:
     UFs.clear();
     UFs.insert(UF);
   }
+
+  void setWidestScalarInBits(unsigned W) { WidestScalarInBits = W; }
+  unsigned getWidestScalarInBits() const { return WidestScalarInBits; }
 
   /// Return a string with the name of the plan and the applicable VFs and UFs.
   std::string getName() const;

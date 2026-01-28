@@ -2315,11 +2315,16 @@ def int_get_active_lane_mask:
             [llvm_anyint_ty, LLVMMatchType<1>],
             [IntrNoMem, IntrNoSync, IntrWillReturn]>;
 
+// Args: (AVL, VF, IsScalable, ElementWidth)
+// The 4th arg (ElementWidth) was added to allow the backend to select the
+// correct SEW/LMUL for vsetvli. This is a breaking change to the intrinsic
+// signature; existing bitcode using the 3-arg form will fail verification.
 def int_experimental_get_vector_length:
   DefaultAttrsIntrinsic<[llvm_i32_ty],
-                        [llvm_anyint_ty, llvm_i32_ty, llvm_i1_ty],
+                        [llvm_anyint_ty, llvm_i32_ty, llvm_i1_ty, llvm_i32_ty],
                         [IntrNoMem, IntrNoSync, IntrWillReturn,
-                         ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+                         ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>,
+                         ImmArg<ArgIndex<3>>]>;
 
 def int_experimental_cttz_elts:
   DefaultAttrsIntrinsic<[llvm_anyint_ty],

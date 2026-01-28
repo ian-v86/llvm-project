@@ -1516,6 +1516,32 @@ bool VPlanTransforms::tryAddExplicitVectorLength(VPlan &Plan) {
     }
     recursivelyDeleteDeadRecipes(HeaderMask);
   }
+
+  // Convert VPWidenRecipes to EVL-aware VP intrinsics.
+  for (VPBlockBase *Block : vp_depth_first_shallow(
+           Plan.getVectorLoopRegion()->getEntry())) {
+    auto *VPBB = dyn_cast<VPBasicBlock>(Block);
+    if (!VPBB)
+      continue;
+    for (auto &R : make_early_inc_range(*VPBB)) {
+      auto *WidR = dyn_cast<VPWidenRecipe>(&R);
+      if (!WidR)
+        continue;
+      // VectorBuilder::createVectorInstruction does not support compares:
+      // vp.icmp/vp.fcmp require a predicate operand that it cannot encode.
+      // Compares remain as VPWidenRecipe and are emitted as regular vector
+      // icmp/fcmp, which is safe because EVL is already enforced on the
+      // surrounding loads/stores — unused lanes are never written.
+      unsigned Opc = WidR->getOpcode();
+      if (Opc == Instruction::ICmp || Opc == Instruction::FCmp)
+        continue;
+      auto *NewR = new VPWidenEVLRecipe(*WidR, *VPEVL);
+      NewR->insertBefore(WidR);
+      WidR->getVPSingleValue()->replaceAllUsesWith(NewR);
+      WidR->eraseFromParent();
+    }
+  }
+
   // Replace all uses of VPCanonicalIVPHIRecipe by
   // VPEVLBasedIVPHIRecipe except for the canonical IV increment.
   CanonicalIVPHI->replaceAllUsesWith(EVLPhi);

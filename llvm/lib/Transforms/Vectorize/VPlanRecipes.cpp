@@ -27,6 +27,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/VectorBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
@@ -69,6 +70,7 @@ bool VPRecipeBase::mayWriteToMemory() const {
   case VPWidenCastSC:
   case VPWidenGEPSC:
   case VPWidenIntOrFpInductionSC:
+  case VPWidenEVLSC:
   case VPWidenLoadEVLSC:
   case VPWidenLoadSC:
   case VPWidenPHISC:
@@ -109,6 +111,7 @@ bool VPRecipeBase::mayReadFromMemory() const {
   case VPReductionSC:
   case VPWidenCanonicalIVSC:
   case VPWidenCastSC:
+  case VPWidenEVLSC:
   case VPWidenGEPSC:
   case VPWidenIntOrFpInductionSC:
   case VPWidenPHISC:
@@ -158,6 +161,7 @@ bool VPRecipeBase::mayHaveSideEffects() const {
   case VPScalarIVStepsSC:
   case VPWidenCanonicalIVSC:
   case VPWidenCastSC:
+  case VPWidenEVLSC:
   case VPWidenGEPSC:
   case VPWidenIntOrFpInductionSC:
   case VPWidenPHISC:
@@ -471,9 +475,11 @@ Value *VPInstruction::generatePerPart(VPTransformState &State, unsigned Part) {
       assert(State.VF.isScalable() && "Expected scalable vector factor.");
       Value *VFArg = State.Builder.getInt32(State.VF.getKnownMinValue());
 
+      Value *EWArg = State.Builder.getInt32(
+          State.Plan->getWidestScalarInBits());
       Value *EVL = State.Builder.CreateIntrinsic(
           State.Builder.getInt32Ty(), Intrinsic::experimental_get_vector_length,
-          {AVL, VFArg, State.Builder.getTrue()});
+          {AVL, VFArg, State.Builder.getTrue(), EWArg});
       return EVL;
     };
     // TODO: Restructure this code with an explicit remainder loop, vsetvli can
@@ -1144,6 +1150,50 @@ void VPWidenRecipe::execute(VPTransformState &State) {
 void VPWidenRecipe::print(raw_ostream &O, const Twine &Indent,
                           VPSlotTracker &SlotTracker) const {
   O << Indent << "WIDEN ";
+  printAsOperand(O, SlotTracker);
+  O << " = " << Instruction::getOpcodeName(Opcode);
+  printFlags(O);
+  printOperands(O, SlotTracker);
+}
+#endif
+
+void VPWidenEVLRecipe::execute(VPTransformState &State) {
+  assert(State.UF == 1 && "Expected UF == 1 with EVL vectorization");
+  State.setDebugLocFrom(getDebugLoc());
+  auto &Builder = State.Builder;
+
+  unsigned NumOps = getNumOperands() - 1; // exclude EVL
+  SmallVector<Value *, 2> Ops;
+  for (unsigned i = 0; i < NumOps; ++i)
+    Ops.push_back(State.get(getOperand(i), 0));
+
+  Value *EVL = State.get(getEVL(), VPIteration(0, 0));
+  Value *Mask = Builder.CreateVectorSplat(State.VF, Builder.getTrue());
+
+  IRBuilder<>::FastMathFlagGuard FMFGuard(Builder);
+  if (auto *FPInst = dyn_cast<FPMathOperator>(getUnderlyingInstr()))
+    Builder.setFastMathFlags(FPInst->getFastMathFlags());
+
+  VectorBuilder VBuilder(Builder);
+  VBuilder.setEVL(EVL).setMask(Mask);
+  // Return type is the operand type, which is correct for arithmetic ops.
+  // Compare instructions (icmp/fcmp) are excluded in VPlanTransforms and
+  // never reach here — they would need a different return type (i1 vector)
+  // and a predicate operand that VectorBuilder cannot encode.
+  Value *V =
+      VBuilder.createVectorInstruction(Opcode, Ops[0]->getType(), Ops);
+
+  if (auto *VecOp = dyn_cast<Instruction>(V))
+    setFlags(VecOp);
+
+  State.set(this, V, 0);
+  State.addMetadata(V, dyn_cast_or_null<Instruction>(getUnderlyingValue()));
+}
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+void VPWidenEVLRecipe::print(raw_ostream &O, const Twine &Indent,
+                             VPSlotTracker &SlotTracker) const {
+  O << Indent << "WIDEN vp ";
   printAsOperand(O, SlotTracker);
   O << " = " << Instruction::getOpcodeName(Opcode);
   printFlags(O);

@@ -5798,6 +5798,9 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
     ConstantInt *VF = cast<ConstantInt>(Call.getArgOperand(1));
     Check(!VF->isNegative() && !VF->isZero(),
           "get_vector_length: VF must be positive", Call);
+    ConstantInt *EW = cast<ConstantInt>(Call.getArgOperand(3));
+    Check(!EW->isNegative() && !EW->isZero(),
+          "get_vector_length: ElementWidth must be positive", Call);
     break;
   }
   case Intrinsic::masked_load: {

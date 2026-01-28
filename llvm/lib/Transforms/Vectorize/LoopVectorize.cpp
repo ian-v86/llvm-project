@@ -4453,6 +4453,7 @@ static bool willGenerateVectors(VPlan &Plan, ElementCount VF,
       case VPDef::VPWidenCastSC:
       case VPDef::VPWidenGEPSC:
       case VPDef::VPWidenSC:
+      case VPDef::VPWidenEVLSC:
       case VPDef::VPWidenSelectSC:
       case VPDef::VPBlendSC:
       case VPDef::VPFirstOrderRecurrencePHISC:
@@ -8658,6 +8659,11 @@ LoopVectorizationPlanner::tryToBuildVPlanWithVPRecipes(VFRange &Range) {
 
   for (ElementCount VF : Range)
     Plan->addVF(VF);
+  {
+    unsigned WidestType;
+    std::tie(std::ignore, WidestType) = CM.getSmallestAndWidestTypes();
+    Plan->setWidestScalarInBits(WidestType);
+  }
   Plan->setName("Initial VPlan");
 
   // Replace VPValues for known constant strides guaranteed by predicate scalar

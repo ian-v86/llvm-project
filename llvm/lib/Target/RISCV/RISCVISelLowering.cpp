@@ -9001,14 +9001,14 @@ static SDValue lowerVectorIntrinsicScalars(SDValue Op, SelectionDAG &DAG,
 // SEW=8 for the vsetvli because it is the only element width that supports all
 // fractional LMULs. The LMUL is choosen so that with SEW=8 the VLMax is
 // (vscale * VF). Where vscale is defined as VLEN/RVVBitsPerBlock. The
-// InsertVSETVLI pass can fix up the vtype of the vsetvli if a different
-// SEW and LMUL are better for the surrounding vector instructions.
+// Lower get_vector_length to a vsetvli intrinsic, using the element width
+// from operand 4 to compute SEW and LMUL.
 static SDValue lowerGetVectorLength(SDNode *N, SelectionDAG &DAG,
                                     const RISCVSubtarget &Subtarget) {
   MVT XLenVT = Subtarget.getXLenVT();
 
-  // The smallest LMUL is only valid for the smallest element width.
-  const unsigned ElementWidth = 8;
+  // Read the element width from the 4th argument (operand index 4).
+  const unsigned ElementWidth = N->getConstantOperandVal(4);
 
   // Determine the VF that corresponds to LMUL 1 for ElementWidth.
   unsigned LMul1VF = RISCV::RVVBitsPerBlock / ElementWidth;
